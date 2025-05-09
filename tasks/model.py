@@ -22,7 +22,7 @@ from datasets import load_dataset
 import os
 import requests
 from dotenv import load_dotenv
-from containers import image
+from containers import container_image
 
 from tasks.helpers import image_to_base64, collate_fn, dataset_dataloader
 
@@ -32,7 +32,7 @@ load_dotenv()
 # %% ------------------------------
 # donwload model - task
 # --------------------------------
-@task(container_image=image,
+@task(container_image=container_image,
     cache=True,
     cache_version="1.333",
     requests=Resources(cpu="2", mem="2Gi"))
@@ -47,7 +47,7 @@ def download_model() -> torch.nn.Module:
 # %% ------------------------------
 # train model - task
 # --------------------------------
-@task(container_image=image,
+@task(container_image=container_image,
     requests=Resources(cpu="2", mem="8Gi", gpu="1"))
 def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs: int, num_classes: int) -> torch.nn.Module:
 
@@ -208,7 +208,7 @@ def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs:
 # %% ------------------------------
 # evaluate model - task
 # ---------------------------------
-@task(container_image=image,
+@task(container_image=container_image,
       enable_deck=True,
       requests=Resources(cpu="2", mem="8Gi", gpu="1"))
 def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshold: float = 0.75) -> str:
@@ -369,7 +369,7 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
 # upload model to hub - task
 # --------------------------------
 @task(
-    container_image=image,
+    container_image=container_image,
     requests=Resources(cpu="2", mem="2Gi"),
     secret_requests=[Secret(group=None, key="hf_token")],
 )

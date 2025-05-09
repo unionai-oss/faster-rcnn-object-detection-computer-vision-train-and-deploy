@@ -27,14 +27,14 @@ import requests
 from dotenv import load_dotenv
 
 from tasks.helpers import image_to_base64, collate_fn, dataset_dataloader
-from containers import image
+from containers import container_image
 
 load_dotenv()
 
 # %% ------------------------------
 # Download dataset - task
 # --------------------------------
-@task(container_image=image,
+@task(container_image=container_image,
       enable_deck=True,
       cache=True,
       cache_version="1.333",
@@ -67,7 +67,7 @@ def download_hf_dataset(repo_id: str = 'sagecodes/union_swag_coco',
 # %% ------------------------------
 # visualize data - task
 # --------------------------------
-@task(container_image=image,
+@task(container_image=container_image,
       enable_deck=True,
       requests=Resources(cpu="2", mem="4Gi"))
 def verify_data_and_annotations(dataset_dir: FlyteDirectory) -> FlyteFile:
