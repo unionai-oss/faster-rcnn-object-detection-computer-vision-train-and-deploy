@@ -25,34 +25,50 @@ from dotenv import load_dotenv
 from containers import container_image
 
 from tasks.helpers import image_to_base64, collate_fn, dataset_dataloader
-
+from union import Artifact
+from typing_extensions import Annotated
 
 load_dotenv()
+
+#Define Artifacts
+FRCCNPreTrainedModel = Artifact(name="frccn_pretrained_model")
+FRCCNFineTunedModel = Artifact(name="frccn_fine_tuned_model")
 
 # %% ------------------------------
 # donwload model - task
 # --------------------------------
 @task(container_image=container_image,
     cache=True,
-    cache_version="1.333",
+    cache_version="1.334",
     requests=Resources(cpu="2", mem="2Gi"))
-def download_model() -> torch.nn.Module:
+def download_model() -> Annotated[FlyteFile, FRCCNPreTrainedModel]:
 
     model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
         weights=FasterRCNN_MobileNet_V3_Large_320_FPN_Weights, weights_only=True
     )
 
-    return model
+    save_dir = "frccn_mobilenet_pretrained_model.pth"
+    torch.save(model, save_dir)
+
+    # return model
+    return FRCCNPreTrainedModel.create_from(save_dir)
 
 # %% ------------------------------
 # train model - task
 # --------------------------------
 @task(container_image=container_image,
     requests=Resources(cpu="2", mem="8Gi", gpu="1"))
-def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs: int, num_classes: int) -> torch.nn.Module:
+def train_model(model_file: FlyteFile,
+                dataset_dir: FlyteDirectory,
+                num_epochs: int,
+                num_classes: int = 2, 
+                conf_thresh: float = 0.5, 
+                validate_every_n_epochs: int = 1) -> Annotated[FlyteFile, FRCCNFineTunedModel]:
 
-    # TODO: make from dict
-    num_classes = num_classes  # number of classes + background (TODO: add one for the background class automatically)
+
+    num_classes = num_classes + 1 # + 1 background)
+    print(f"Using confidence threshold: {conf_thresh} for evaluation")
+
     num_epochs = num_epochs
     best_mean_iou = 0
     model_dir = "models"
@@ -60,13 +76,13 @@ def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     dataset_dir.download()
-
     os.makedirs(model_dir, exist_ok=True)
-
     local_dataset_dir = dataset_dir.path  # Use the local path for FlyteDirectory
-
     data_loader = dataset_dataloader(root=local_dataset_dir, annFile="train.json")
     test_data_loader = dataset_dataloader(root=local_dataset_dir, annFile="train.json")
+
+    # Load pretrained model
+    model = torch.load(model_file, map_location="cpu", weights_only=False)
 
     # Modify the model to add a new classification head based on the number of classes
     in_features = model.roi_heads.box_predictor.cls_score.in_features
@@ -85,24 +101,24 @@ def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs:
     # Learning rate scheduler
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    # Function to filter out and correct invalid boxes
-    def filter_and_correct_boxes(targets):
-        filtered_targets = []
-        for target in targets:
-            boxes = target["boxes"]
-            labels = target["labels"]
-            valid_indices = []
-            for i, box in enumerate(boxes):
-                if box[2] > box[0] and box[3] > box[1]:
-                    valid_indices.append(i)
-                else:
-                    print(f"Invalid box found and removed: {box}")
-            filtered_boxes = boxes[valid_indices]
-            filtered_labels = labels[valid_indices]
-            filtered_targets.append(
-                {"boxes": filtered_boxes, "labels": filtered_labels}
-            )
-        return filtered_targets
+    # # Function to filter out and correct invalid boxes
+    # def filter_and_correct_boxes(targets):
+    #     filtered_targets = []
+    #     for target in targets:
+    #         boxes = target["boxes"]
+    #         labels = target["labels"]
+    #         valid_indices = []
+    #         for i, box in enumerate(boxes):
+    #             if box[2] > box[0] and box[3] > box[1]:
+    #                 valid_indices.append(i)
+    #             else:
+    #                 print(f"Invalid box found and removed: {box}")
+    #         filtered_boxes = boxes[valid_indices]
+    #         filtered_labels = labels[valid_indices]
+    #         filtered_targets.append(
+    #             {"boxes": filtered_boxes, "labels": filtered_labels}
+    #         )
+    #     return filtered_targets
 
     # Function to evaluate the model
     def evaluate_model(model, data_loader):
@@ -129,7 +145,7 @@ def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs:
                     boxes[:, 3] += boxes[:, 1]
                     target["boxes"] = boxes
 
-                targets = filter_and_correct_boxes(targets)
+                # targets = filter_and_correct_boxes(targets)
                 targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
                 outputs = model(images)
@@ -178,7 +194,7 @@ def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs:
                 boxes[:, 3] += boxes[:, 1]
                 target["boxes"] = boxes
 
-            targets = filter_and_correct_boxes(targets)
+            # targets = filter_and_correct_boxes(targets)
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
             loss_dict = model(images, targets)
@@ -202,7 +218,12 @@ def train_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, num_epochs:
             print("Best model saved")
 
     print("Training completed.")
-    return model
+    model_path = os.path.join(local_dataset_dir, "frccn_finetuned_model.pth")
+    # torch.save(model.state_dict(), model_path) 
+    torch.save(model, model_path)
+
+    # return model
+    return FRCCNFineTunedModel.create_from(model_path)
 
 
 # %% ------------------------------
