@@ -9,8 +9,8 @@ from flytekit.types.file import FlyteFile
 # --------------------------------------------------
 # Load the fine-tuned SSD model from Union Artifact
 # --------------------------------------------------
-SSDFineTunedModel = Artifact(name="frccn_fine_tuned_model")
-query = SSDFineTunedModel.query(
+FRCCNFineTunedModel = Artifact(name="frccn_fine_tuned_model")
+query = FRCCNFineTunedModel.query(
     project="default",
     domain="development",
     # version="anmrqcq8pfbnlp42j2vp/n3/0/o0"  # Optional: specify version
@@ -39,7 +39,7 @@ def process_frame(frame):
     labels = prediction[0]['labels'].cpu().numpy()
 
     for i, box in enumerate(boxes):
-        if scores[i] > 0.3:
+        if scores[i] > 0.5: # Confidence threshold for detection 
             x_min, y_min, x_max, y_max = box
             cv2.rectangle(frame, (int(x_min), int(y_min)), (int(x_max), int(y_max)), (0, 255, 0), 2)
             label = f"Class {labels[i]}: {scores[i]:.2f}"
@@ -80,7 +80,7 @@ def run_video_feed(skip_frames=5):
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
         if last_processed_frame is not None:
-            cv2.imshow('Object Detection SSD', last_processed_frame)
+            cv2.imshow('Object Detection RCNN', last_processed_frame)
 
         frame_count += 1
 
