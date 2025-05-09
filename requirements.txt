@@ -1,0 +1,10 @@
+union==0.1.181
+flytekit==1.15.4
+torch==2.5.1
+torchvision==0.20.1
+matplotlib
+pycocotools
+datasets
+huggingface_hub
+python-dotenv
+opencv-python
