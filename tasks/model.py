@@ -101,26 +101,6 @@ def train_model(model_file: FlyteFile,
     # Learning rate scheduler
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    # # Function to filter out and correct invalid boxes
-    # def filter_and_correct_boxes(targets):
-    #     filtered_targets = []
-    #     for target in targets:
-    #         boxes = target["boxes"]
-    #         labels = target["labels"]
-    #         valid_indices = []
-    #         for i, box in enumerate(boxes):
-    #             if box[2] > box[0] and box[3] > box[1]:
-    #                 valid_indices.append(i)
-    #             else:
-    #                 print(f"Invalid box found and removed: {box}")
-    #         filtered_boxes = boxes[valid_indices]
-    #         filtered_labels = labels[valid_indices]
-    #         filtered_targets.append(
-    #             {"boxes": filtered_boxes, "labels": filtered_labels}
-    #         )
-    #     return filtered_targets
-
-    # Function to evaluate the model
     def evaluate_model(model, data_loader):
         model.eval()
         iou_list, loss_list = [], []
@@ -145,7 +125,6 @@ def train_model(model_file: FlyteFile,
                     boxes[:, 3] += boxes[:, 1]
                     target["boxes"] = boxes
 
-                # targets = filter_and_correct_boxes(targets)
                 targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
                 outputs = model(images)
@@ -194,7 +173,6 @@ def train_model(model_file: FlyteFile,
                 boxes[:, 3] += boxes[:, 1]
                 target["boxes"] = boxes
 
-            # targets = filter_and_correct_boxes(targets)
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
             loss_dict = model(images, targets)
