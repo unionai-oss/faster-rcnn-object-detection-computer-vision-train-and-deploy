@@ -16,7 +16,6 @@ from flytekit.types.directory import FlyteDirectory
 from flytekit.types.file import FlyteFile
 import base64
 from textwrap import dedent
-from pathlib import Path
 
 from datasets import load_dataset
 import os
@@ -27,6 +26,7 @@ from containers import container_image
 from tasks.helpers import image_to_base64, collate_fn, dataset_dataloader
 from union import Artifact
 from typing_extensions import Annotated
+import pandas as pd
 
 load_dotenv()
 
@@ -57,12 +57,13 @@ def download_model() -> Annotated[FlyteFile, FRCCNPreTrainedModel]:
 # train model - task
 # --------------------------------
 @task(container_image=container_image,
+      enable_deck=True,
     requests=Resources(cpu="2", mem="8Gi", gpu="1"))
 def train_model(model_file: FlyteFile,
                 dataset_dir: FlyteDirectory,
                 num_epochs: int,
                 num_classes: int = 2, 
-                conf_thresh: float = 0.5, 
+                conf_thresh: float = 0.75, 
                 validate_every_n_epochs: int = 1) -> Annotated[FlyteFile, FRCCNFineTunedModel]:
 
 
@@ -103,57 +104,62 @@ def train_model(model_file: FlyteFile,
 
     def evaluate_model(model, data_loader):
         model.eval()
-        iou_list, loss_list = [], []
+        iou_list = []
         correct_predictions, total_predictions = 0, 0
+
         with torch.no_grad():
             for images, targets in data_loader:
-                images = [image.to(device) for image in images]
+                images = [img.to(device) for img in images]
                 targets = [
                     {
-                        "boxes": torch.tensor(
-                            [obj["bbox"] for obj in t], dtype=torch.float32
-                        ).to(device),
-                        "labels": torch.tensor(
-                            [obj["category_id"] for obj in t], dtype=torch.int64
-                        ).to(device),
+                        "boxes": torch.tensor([obj["bbox"] for obj in t], dtype=torch.float32).to(device),
+                        "labels": torch.tensor([obj["category_id"] for obj in t], dtype=torch.int64).to(device),
                     }
                     for t in targets
                 ]
-                for target in targets:
-                    boxes = target["boxes"]
+                for t in targets:
+                    boxes = t["boxes"]
                     boxes[:, 2] += boxes[:, 0]
                     boxes[:, 3] += boxes[:, 1]
-                    target["boxes"] = boxes
-
-                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                    t["boxes"] = boxes
 
                 outputs = model(images)
 
                 for i, output in enumerate(outputs):
-                    pred_boxes = output["boxes"]
-                    true_boxes = targets[i]["boxes"]
-                    if pred_boxes.size(0) == 0 or true_boxes.size(0) == 0:
+                    if "scores" not in output:
                         continue
-                    iou = box_iou(pred_boxes, true_boxes)
-                    iou_list.append(iou.mean().item())
 
-                    pred_labels = output["labels"]
+                    keep = output["scores"] > conf_thresh
+                    pred_boxes = output["boxes"][keep]
+                    pred_labels = output["labels"][keep]
+                    true_boxes = targets[i]["boxes"]
                     true_labels = targets[i]["labels"]
 
-                    # Ensure both tensors are the same size for comparison
-                    min_size = min(len(pred_labels), len(true_labels))
-                    correct_predictions += (
-                        (pred_labels[:min_size] == true_labels[:min_size]).sum().item()
-                    )
-                    total_predictions += min_size
+                    if pred_boxes.size(0) == 0 or true_boxes.size(0) == 0:
+                        continue
+
+                    iou = box_iou(pred_boxes, true_boxes)
+                    iou_list.append(iou.max(dim=1)[0].mean().item())  # best-match IoU
+
+                    # Accuracy: match predictions to true labels using best IoU
+                    max_iou_indices = iou.argmax(dim=1)
+                    matched_true_labels = true_labels[max_iou_indices]
+                    correct_predictions += (pred_labels == matched_true_labels).sum().item()
+                    total_predictions += len(pred_labels)
 
         mean_iou = sum(iou_list) / len(iou_list) if iou_list else 0
         accuracy = correct_predictions / total_predictions if total_predictions else 0
-        print(f"Mean IoU: {mean_iou:.4f}, Accuracy: {accuracy:.4f}")
+        print(f"Mean IoU: {mean_iou:.4f}, Accuracy: {accuracy:.4f}", flush=True)
+
+        #TODO: save the model if mean_iou > best_mean_iou or add early stopping
+
         return mean_iou, accuracy
+    
+    epoch_logs = []
 
     for epoch in range(num_epochs):
         model.train()
+        total_loss = 0.0
         for i, (images, targets) in enumerate(data_loader):
             images = [image.to(device) for image in images]
             targets = [
@@ -182,14 +188,26 @@ def train_model(model_file: FlyteFile,
             losses.backward()
             optimizer.step()
 
-            if i % 10 == 0:
+            total_loss += losses.item() 
+
+            if i % 1 == 0:
                 print(
-                    f"Epoch [{epoch}/{num_epochs}], Step [{i}/{len(data_loader)}], Loss: {losses.item():.4f}"
+                    f"Epoch [{epoch}/{num_epochs}], Step [{i}/{len(data_loader)}], Loss: {losses.item():.4f}",
+                    flush=True
                 )
 
         lr_scheduler.step()
 
         mean_iou, accuracy = evaluate_model(model, test_data_loader)
+        avg_train_loss = total_loss / len(data_loader)
+        
+        epoch_logs.append({
+            "epoch": epoch + 1,
+            "train_loss": avg_train_loss,
+            "val_accuracy": accuracy,
+            "val_mean_iou": mean_iou,
+        })
+
         if mean_iou > best_mean_iou:
             best_mean_iou = mean_iou
             torch.save(model.state_dict(), os.path.join(model_dir, "best_model.pth"))
@@ -200,13 +218,46 @@ def train_model(model_file: FlyteFile,
     # torch.save(model.state_dict(), model_path) 
     torch.save(model, model_path)
 
+    df = pd.DataFrame(epoch_logs)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(df["epoch"], df["train_loss"], label="Train Loss", marker="o")
+    ax.plot(df["epoch"], df["val_accuracy"], label="Val Accuracy", marker="s")
+    ax.plot(df["epoch"], df["val_mean_iou"], label="Val Mean IoU", marker="^")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Metric")
+    ax.set_title("Training Metrics")
+    ax.legend()
+    ax.grid(True)
+
+    plot_path = os.path.join(model_dir, "training_metrics.png")
+    plt.tight_layout()
+    plt.savefig(plot_path)
+    plt.close()
+
+    # Convert to base64
+    def image_to_base64(img_path):
+        with open(img_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+
+    plot_base64 = image_to_base64(plot_path)
+    deck = Deck("Training Metrics")
+    deck.append(f"""
+    <h2>Training Progress</h2>
+    <img src="data:image/png;base64,{plot_base64}" width="600"/>
+    <h3>Last Epoch:</h3>
+    <pre>{df.tail(1).to_string(index=False)}</pre>
+    """)
+    current_context().decks.insert(0, deck)
+
+
     # return model
     return FRCCNFineTunedModel.create_from(model_path)
 
 
 # %% ------------------------------
 # evaluate model - task
-# ---------------------------------
+# --------------------------------
+
 @task(container_image=container_image,
       enable_deck=True,
       requests=Resources(cpu="2", mem="8Gi", gpu="1"))
@@ -216,34 +267,27 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
     
     dataset_dir.download()
     local_dataset_dir = dataset_dir.path
-    data_loader = dataset_dataloader(root=local_dataset_dir, 
-                                     annFile="train.json", shuffle=False)
+    data_loader = dataset_dataloader(root=local_dataset_dir, annFile="train.json", shuffle=False)
 
     model.to(device)
     model.eval()
 
     num_images = 9  # Number of images to display in the grid
-    fig, axes = plt.subplots(3, 3, figsize=(15, 15))  # Create a 3x3 grid
-    axes = axes.flatten()  # Flatten the axes array for easier iteration
+    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+    axes = axes.flatten()
 
-    iou_list, accuracy_list = [], []
-    report = []  # To store the IoU and accuracy report for each image
-    global_image_index = 0  # Global image counter across batches
-    images_plotted = 0  # Counter for images plotted in the grid
-
+    iou_list, report = [], []
     correct_predictions, total_predictions = 0, 0
+    images_plotted = 0
+    global_image_index = 0
 
     with torch.no_grad():
         for batch_idx, (images, targets) in enumerate(data_loader):
             images = [image.to(device) for image in images]
             targets = [
                 {
-                    "boxes": torch.tensor(
-                        [obj["bbox"] for obj in t], dtype=torch.float32
-                    ).to(device),
-                    "labels": torch.tensor(
-                        [obj["category_id"] for obj in t], dtype=torch.int64
-                    ).to(device),
+                    "boxes": torch.tensor([obj["bbox"] for obj in t], dtype=torch.float32).to(device),
+                    "labels": torch.tensor([obj["category_id"] for obj in t], dtype=torch.int64).to(device),
                 }
                 for t in targets
             ]
@@ -262,39 +306,33 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
                 true_boxes = targets[i]["boxes"]
                 true_labels = targets[i]["labels"]
 
-                # Filter predictions by confidence threshold
                 high_conf_indices = pred_scores > threshold
                 pred_boxes = pred_boxes[high_conf_indices]
                 pred_labels = pred_labels[high_conf_indices]
 
-                # Get the global image index
                 image_index = global_image_index + i
 
                 if pred_boxes.size(0) == 0 or true_boxes.size(0) == 0:
                     report.append(f"Image {image_index}: No valid predictions or ground truths")
                     continue
 
-                # Calculate IoU and match predictions to ground truth based on IoU
                 iou = box_iou(pred_boxes, true_boxes)
-                max_iou_indices = iou.argmax(dim=1)  # Find the best matching true box for each predicted box
+                max_iou_indices = iou.argmax(dim=1)
+                matched_true_labels = true_labels[max_iou_indices]
 
-                # Calculate accuracy based on matching boxes
-                matched_true_labels = true_labels[max_iou_indices]  # Match true labels with best IoU
                 correct_predictions += (pred_labels == matched_true_labels).sum().item()
                 total_predictions += len(pred_labels)
 
-                # Calculate mean IoU
-                mean_iou = iou.max(dim=1)[0].mean().item()  # Get the highest IoU for each predicted box
+                mean_iou = iou.max(dim=1)[0].mean().item()
                 iou_list.append(mean_iou)
 
-                # Append report for this image
                 accuracy = correct_predictions / total_predictions if total_predictions else 0
                 report.append(f"Image {image_index}: IoU = {mean_iou:.4f}, Accuracy = {accuracy:.4f}")
 
-                # Plot images (limit to num_images)
+                # Plotting only the first 9 images
                 if images_plotted < num_images:
-                    img = images[i].cpu().permute(1, 2, 0)  # Convert image to HWC format for plotting
-                    ax = axes[images_plotted]  # Access the correct subplot
+                    img = images[i].cpu().permute(1, 2, 0)
+                    ax = axes[images_plotted]
 
                     ax.imshow(img)
                     for j in range(len(pred_boxes)):
@@ -302,26 +340,20 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
                         score = pred_scores[high_conf_indices][j].cpu().item()
                         label = pred_labels[j].cpu().item()
 
-                        if score > threshold:  # Only display predictions with confidence score above threshold
+                        if score > threshold:
                             rect = patches.Rectangle((bbox[0], bbox[1]), bbox[2] - bbox[0], bbox[3] - bbox[1],
                                                      linewidth=2, edgecolor='r', facecolor='none')
                             ax.add_patch(rect)
                             ax.text(bbox[0], bbox[1], f"{label}: {score:.2f}", color="white", fontsize=8,
                                     bbox=dict(facecolor="red", alpha=0.5))
-                    ax.axis('off')  # Hide axes
+                    ax.axis('off')
                     images_plotted += 1
 
-            # Update global image index after processing the batch
             global_image_index += len(images)
 
-            if images_plotted >= num_images:  # Break once we've plotted 9 images
-                break
-
-    # Compute overall metrics
     overall_iou = sum(iou_list) / len(iou_list) if iou_list else 0
     overall_accuracy = correct_predictions / total_predictions if total_predictions else 0
 
-    # Save the image grid
     pred_boxes_imgs = "prediction_grid.png"
     plt.tight_layout()
     plt.savefig(pred_boxes_imgs)
@@ -329,10 +361,9 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
 
     train_image_base64 = image_to_base64(pred_boxes_imgs)
 
-    # Prepare the report as text
     report_text = "\n".join(report)
     overall_report = dedent(f"""
-    Overall Metrics:
+    Overall Metrics on predictions with confidence threshold {threshold}:
     ----------------
     Mean IoU: {overall_iou:.4f}
     Mean Accuracy: {overall_accuracy:.4f}
@@ -342,7 +373,6 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
     {report_text}
     """)
 
-    # Display the report in FlyteDeck
     ctx = current_context()
     deck = Deck("Evaluation Results")
     html_report = dedent(f"""
@@ -354,14 +384,12 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
         <h2 style="color: #2C3E50;">Evaluation Report</h2>
         <pre>{overall_report}</pre>
     </div>
-
     """)
-
-    # Append HTML content to the deck
     deck.append(html_report)
     ctx.decks.insert(0, deck)
 
     return overall_report
+
 
 
 # %% ------------------------------
