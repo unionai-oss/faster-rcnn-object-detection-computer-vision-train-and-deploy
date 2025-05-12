@@ -2,3 +2,4 @@ __pycache__
 .env
 /dataset
 object_detection_video.mp4
+.DS_Store

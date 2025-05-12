@@ -1,17 +1,17 @@
 # main.py
 
-import torch
-import gradio as gr
-from torchvision.transforms import functional as F
-from PIL import Image, ImageDraw
-import numpy as np
 import time
-import cv2  # Add this at the top
 
+import gradio as gr
+import numpy as np
+import torch
+from PIL import Image, ImageDraw
+from torchvision.transforms import functional as F
 
 # Load model from artifact or fallback path
 try:
     from union_runtime import get_input
+
     model_path = get_input("downloaded-model")
 except:
     model_path = "frccn_fine_tuned_model.pth"
@@ -22,10 +22,8 @@ model.eval()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-labels_map = {
-    1: "union",
-    2: "flyte"
-}
+labels_map = {1: "union", 2: "flyte"}
+
 
 def detect_objects(frame: np.ndarray) -> np.ndarray:
     start = time.time()
@@ -36,9 +34,9 @@ def detect_objects(frame: np.ndarray) -> np.ndarray:
     with torch.no_grad():
         outputs = model(img_tensor)
 
-    boxes = outputs[0]['boxes'].cpu()
-    scores = outputs[0]['scores'].cpu()
-    labels = outputs[0]['labels'].cpu()
+    boxes = outputs[0]["boxes"].cpu()
+    scores = outputs[0]["scores"].cpu()
+    labels = outputs[0]["labels"].cpu()
 
     threshold = 0.5
     selected = scores > threshold
@@ -50,9 +48,13 @@ def detect_objects(frame: np.ndarray) -> np.ndarray:
     for box, label, score in zip(boxes, labels, scores):
         x1, y1, x2, y2 = box.tolist()
         draw.rectangle([x1, y1, x2, y2], outline="green", width=3)
-        draw.text((x1, y1), f"{labels_map.get(label.item(), label.item())}: {score:.2f}", fill="white")
+        draw.text(
+            (x1, y1),
+            f"{labels_map.get(label.item(), label.item())}: {score:.2f}",
+            fill="white",
+        )
 
-    # ✅ Overlay inference time and device info
+    # Overlay inference time and device info
     end = time.time()
     inference_time = (end - start) * 1000  # ms
     debug_text = f"{device.type.upper()} | {inference_time:.1f} ms"
@@ -61,56 +63,6 @@ def detect_objects(frame: np.ndarray) -> np.ndarray:
 
     return np.array(pil_img)
 
-# def detect_objects(frame: np.ndarray) -> np.ndarray:
-#     start = time.time()
-
-#     # Resize frame for faster processing
-#     resized = cv2.resize(frame, (320, 240))
-
-#     # Convert BGR to RGB
-#     rgb_frame = cv2.cvtColor(resized, cv2.COLOR_RGB2BGR)
-
-#     # Prepare image for model
-#     img_tensor = F.to_tensor(rgb_frame).unsqueeze(0).to(device)
-
-#     with torch.no_grad():
-#         outputs = model(img_tensor)
-
-#     boxes = outputs[0]['boxes'].cpu()
-#     scores = outputs[0]['scores'].cpu()
-#     labels = outputs[0]['labels'].cpu()
-
-#     threshold = 0.5
-#     selected = scores > threshold
-#     boxes = boxes[selected]
-#     scores = scores[selected]
-#     labels = labels[selected]
-
-#     # Draw on the RGB frame
-#     for box, label, score in zip(boxes, labels, scores):
-#         x1, y1, x2, y2 = map(int, box.tolist())
-#         label_text = f"{labels_map.get(label.item(), label.item())}: {score:.2f}"
-#         cv2.rectangle(rgb_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-#         cv2.putText(rgb_frame, label_text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
-
-#     # Overlay inference time and device info
-#     end = time.time()
-#     inference_time = (end - start) * 1000  # ms
-#     debug_text = f"{device.type.upper()} | {inference_time:.1f} ms"
-#     cv2.putText(rgb_frame, debug_text, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
-#     cv2.putText(rgb_frame, debug_text, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-
-#     return rgb_frame
-
-# Create Gradio app
-# demo = gr.Interface(
-#     fn=detect_objects,
-#     inputs=gr.Image(sources=["webcam"], streaming=True, type="numpy", every=10),
-#     outputs=gr.Image(type="numpy"),
-#     live=True,
-#     title="Union Faster RCNN Object Detection",
-#     description="Runs Faster RCNN object detector using your webcam.",
-# )
 
 # Create Gradio app with upload option
 demo = gr.Interface(
@@ -126,4 +78,3 @@ if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=8080)
 
 # union deploy apps app.py frccn-object-detection-gradio
-

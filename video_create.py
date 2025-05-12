@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import cv2
 import numpy as np
 import requests
@@ -6,11 +8,9 @@ from flytekit.types.file import FlyteFile
 from PIL import Image, ImageDraw, ImageFont
 from torchvision.transforms import functional as F
 from union import Artifact, UnionRemote
-from io import BytesIO
 
 # Define labels map
-labels_map = {1: "Union Sticker",
-               2: "Flyte Sticker"}
+labels_map = {1: "Union Sticker", 2: "Flyte Sticker"}
 
 
 # ---------------------------------

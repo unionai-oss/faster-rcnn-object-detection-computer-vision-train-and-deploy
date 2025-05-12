@@ -1,46 +1,45 @@
 # %%
+import base64
+import os
+from textwrap import dedent
+
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
-
+import pandas as pd
 import torch
 import torch.optim as optim
 import torchvision
-from flytekit import task, workflow, ImageSpec, Resources, current_context, Deck, Secret
-from torch.utils.data import DataLoader
-from torchvision.datasets import CocoDetection
-from torchvision.models.detection.faster_rcnn import \
-    FasterRCNN_ResNet50_FPN_Weights, FasterRCNN_MobileNet_V3_Large_320_FPN_Weights
-from torchvision.ops import box_iou
-from torchvision.transforms import transforms as T
+from dotenv import load_dotenv
+from flytekit import Deck, Resources, Secret, current_context, task
 from flytekit.types.directory import FlyteDirectory
 from flytekit.types.file import FlyteFile
-import base64
-from textwrap import dedent
-
-from datasets import load_dataset
-import os
-import requests
-from dotenv import load_dotenv
-from containers import container_image
-
-from tasks.helpers import image_to_base64, collate_fn, dataset_dataloader
-from union import Artifact
+from torchvision.models.detection.faster_rcnn import (
+    FasterRCNN_MobileNet_V3_Large_320_FPN_Weights,
+)
+from torchvision.ops import box_iou
+from torchvision.transforms import transforms as T
 from typing_extensions import Annotated
-import pandas as pd
+from union import Artifact
+
+from containers import container_image
+from tasks.helpers import dataset_dataloader, image_to_base64
 
 load_dotenv()
 
-#Define Artifacts
+# Define Artifacts
 FRCCNPreTrainedModel = Artifact(name="frccn_pretrained_model")
 FRCCNFineTunedModel = Artifact(name="frccn_fine_tuned_model")
+
 
 # %% ------------------------------
 # donwload model - task
 # --------------------------------
-@task(container_image=container_image,
+@task(
+    container_image=container_image,
     cache=True,
     cache_version="1.334",
-    requests=Resources(cpu="2", mem="2Gi"))
+    requests=Resources(cpu="2", mem="2Gi"),
+)
 def download_model() -> Annotated[FlyteFile, FRCCNPreTrainedModel]:
 
     model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
@@ -53,21 +52,25 @@ def download_model() -> Annotated[FlyteFile, FRCCNPreTrainedModel]:
     # return model
     return FRCCNPreTrainedModel.create_from(save_dir)
 
+
 # %% ------------------------------
 # train model - task
 # --------------------------------
-@task(container_image=container_image,
-      enable_deck=True,
-    requests=Resources(cpu="2", mem="8Gi", gpu="1"))
-def train_model(model_file: FlyteFile,
-                dataset_dir: FlyteDirectory,
-                num_epochs: int,
-                num_classes: int = 2, 
-                conf_thresh: float = 0.75, 
-                validate_every_n_epochs: int = 1) -> Annotated[FlyteFile, FRCCNFineTunedModel]:
+@task(
+    container_image=container_image,
+    enable_deck=True,
+    requests=Resources(cpu="2", mem="8Gi", gpu="1"),
+)
+def train_model(
+    model_file: FlyteFile,
+    dataset_dir: FlyteDirectory,
+    num_epochs: int,
+    num_classes: int = 2,
+    conf_thresh: float = 0.75,
+    validate_every_n_epochs: int = 1,
+) -> Annotated[FlyteFile, FRCCNFineTunedModel]:
 
-
-    num_classes = num_classes + 1 # + 1 background)
+    num_classes = num_classes + 1  # + 1 background)
     print(f"Using confidence threshold: {conf_thresh} for evaluation")
 
     num_epochs = num_epochs
@@ -112,8 +115,12 @@ def train_model(model_file: FlyteFile,
                 images = [img.to(device) for img in images]
                 targets = [
                     {
-                        "boxes": torch.tensor([obj["bbox"] for obj in t], dtype=torch.float32).to(device),
-                        "labels": torch.tensor([obj["category_id"] for obj in t], dtype=torch.int64).to(device),
+                        "boxes": torch.tensor(
+                            [obj["bbox"] for obj in t], dtype=torch.float32
+                        ).to(device),
+                        "labels": torch.tensor(
+                            [obj["category_id"] for obj in t], dtype=torch.int64
+                        ).to(device),
                     }
                     for t in targets
                 ]
@@ -144,17 +151,19 @@ def train_model(model_file: FlyteFile,
                     # Accuracy: match predictions to true labels using best IoU
                     max_iou_indices = iou.argmax(dim=1)
                     matched_true_labels = true_labels[max_iou_indices]
-                    correct_predictions += (pred_labels == matched_true_labels).sum().item()
+                    correct_predictions += (
+                        (pred_labels == matched_true_labels).sum().item()
+                    )
                     total_predictions += len(pred_labels)
 
         mean_iou = sum(iou_list) / len(iou_list) if iou_list else 0
         accuracy = correct_predictions / total_predictions if total_predictions else 0
         print(f"Mean IoU: {mean_iou:.4f}, Accuracy: {accuracy:.4f}", flush=True)
 
-        #TODO: save the model if mean_iou > best_mean_iou or add early stopping
+        # TODO: save the model if mean_iou > best_mean_iou or add early stopping
 
         return mean_iou, accuracy
-    
+
     epoch_logs = []
 
     for epoch in range(num_epochs):
@@ -188,25 +197,27 @@ def train_model(model_file: FlyteFile,
             losses.backward()
             optimizer.step()
 
-            total_loss += losses.item() 
+            total_loss += losses.item()
 
             if i % 1 == 0:
                 print(
                     f"Epoch [{epoch}/{num_epochs}], Step [{i}/{len(data_loader)}], Loss: {losses.item():.4f}",
-                    flush=True
+                    flush=True,
                 )
 
         lr_scheduler.step()
 
         mean_iou, accuracy = evaluate_model(model, test_data_loader)
         avg_train_loss = total_loss / len(data_loader)
-        
-        epoch_logs.append({
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "val_accuracy": accuracy,
-            "val_mean_iou": mean_iou,
-        })
+
+        epoch_logs.append(
+            {
+                "epoch": epoch + 1,
+                "train_loss": avg_train_loss,
+                "val_accuracy": accuracy,
+                "val_mean_iou": mean_iou,
+            }
+        )
 
         if mean_iou > best_mean_iou:
             best_mean_iou = mean_iou
@@ -215,7 +226,7 @@ def train_model(model_file: FlyteFile,
 
     print("Training completed.")
     model_path = os.path.join(local_dataset_dir, "frccn_finetuned_model.pth")
-    # torch.save(model.state_dict(), model_path) 
+    # torch.save(model.state_dict(), model_path)
     torch.save(model, model_path)
 
     df = pd.DataFrame(epoch_logs)
@@ -241,14 +252,15 @@ def train_model(model_file: FlyteFile,
 
     plot_base64 = image_to_base64(plot_path)
     deck = Deck("Training Metrics")
-    deck.append(f"""
+    deck.append(
+        f"""
     <h2>Training Progress</h2>
     <img src="data:image/png;base64,{plot_base64}" width="600"/>
     <h3>Last Epoch:</h3>
     <pre>{df.tail(1).to_string(index=False)}</pre>
-    """)
+    """
+    )
     current_context().decks.insert(0, deck)
-
 
     # return model
     return FRCCNFineTunedModel.create_from(model_path)
@@ -258,16 +270,23 @@ def train_model(model_file: FlyteFile,
 # evaluate model - task
 # --------------------------------
 
-@task(container_image=container_image,
-      enable_deck=True,
-      requests=Resources(cpu="2", mem="8Gi", gpu="1"))
-def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshold: float = 0.75) -> str:
-    
+
+@task(
+    container_image=container_image,
+    enable_deck=True,
+    requests=Resources(cpu="2", mem="8Gi", gpu="1"),
+)
+def evaluate_model(
+    model: torch.nn.Module, dataset_dir: FlyteDirectory, threshold: float = 0.75
+) -> str:
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
+
     dataset_dir.download()
     local_dataset_dir = dataset_dir.path
-    data_loader = dataset_dataloader(root=local_dataset_dir, annFile="train.json", shuffle=False)
+    data_loader = dataset_dataloader(
+        root=local_dataset_dir, annFile="train.json", shuffle=False
+    )
 
     model.to(device)
     model.eval()
@@ -286,8 +305,12 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
             images = [image.to(device) for image in images]
             targets = [
                 {
-                    "boxes": torch.tensor([obj["bbox"] for obj in t], dtype=torch.float32).to(device),
-                    "labels": torch.tensor([obj["category_id"] for obj in t], dtype=torch.int64).to(device),
+                    "boxes": torch.tensor(
+                        [obj["bbox"] for obj in t], dtype=torch.float32
+                    ).to(device),
+                    "labels": torch.tensor(
+                        [obj["category_id"] for obj in t], dtype=torch.int64
+                    ).to(device),
                 }
                 for t in targets
             ]
@@ -313,7 +336,9 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
                 image_index = global_image_index + i
 
                 if pred_boxes.size(0) == 0 or true_boxes.size(0) == 0:
-                    report.append(f"Image {image_index}: No valid predictions or ground truths")
+                    report.append(
+                        f"Image {image_index}: No valid predictions or ground truths"
+                    )
                     continue
 
                 iou = box_iou(pred_boxes, true_boxes)
@@ -326,8 +351,12 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
                 mean_iou = iou.max(dim=1)[0].mean().item()
                 iou_list.append(mean_iou)
 
-                accuracy = correct_predictions / total_predictions if total_predictions else 0
-                report.append(f"Image {image_index}: IoU = {mean_iou:.4f}, Accuracy = {accuracy:.4f}")
+                accuracy = (
+                    correct_predictions / total_predictions if total_predictions else 0
+                )
+                report.append(
+                    f"Image {image_index}: IoU = {mean_iou:.4f}, Accuracy = {accuracy:.4f}"
+                )
 
                 # Plotting only the first 9 images
                 if images_plotted < num_images:
@@ -341,18 +370,32 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
                         label = pred_labels[j].cpu().item()
 
                         if score > threshold:
-                            rect = patches.Rectangle((bbox[0], bbox[1]), bbox[2] - bbox[0], bbox[3] - bbox[1],
-                                                     linewidth=2, edgecolor='r', facecolor='none')
+                            rect = patches.Rectangle(
+                                (bbox[0], bbox[1]),
+                                bbox[2] - bbox[0],
+                                bbox[3] - bbox[1],
+                                linewidth=2,
+                                edgecolor="r",
+                                facecolor="none",
+                            )
                             ax.add_patch(rect)
-                            ax.text(bbox[0], bbox[1], f"{label}: {score:.2f}", color="white", fontsize=8,
-                                    bbox=dict(facecolor="red", alpha=0.5))
-                    ax.axis('off')
+                            ax.text(
+                                bbox[0],
+                                bbox[1],
+                                f"{label}: {score:.2f}",
+                                color="white",
+                                fontsize=8,
+                                bbox=dict(facecolor="red", alpha=0.5),
+                            )
+                    ax.axis("off")
                     images_plotted += 1
 
             global_image_index += len(images)
 
     overall_iou = sum(iou_list) / len(iou_list) if iou_list else 0
-    overall_accuracy = correct_predictions / total_predictions if total_predictions else 0
+    overall_accuracy = (
+        correct_predictions / total_predictions if total_predictions else 0
+    )
 
     pred_boxes_imgs = "prediction_grid.png"
     plt.tight_layout()
@@ -362,7 +405,8 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
     train_image_base64 = image_to_base64(pred_boxes_imgs)
 
     report_text = "\n".join(report)
-    overall_report = dedent(f"""
+    overall_report = dedent(
+        f"""
     Overall Metrics on predictions with confidence threshold {threshold}:
     ----------------
     Mean IoU: {overall_iou:.4f}
@@ -371,11 +415,13 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
     Per-Image Metrics:
     ------------------
     {report_text}
-    """)
+    """
+    )
 
     ctx = current_context()
     deck = Deck("Evaluation Results")
-    html_report = dedent(f"""
+    html_report = dedent(
+        f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.6;">
        <h2 style="color: #2C3E50;">Predicted Bounding Boxes</h2>
         <img src="data:image/png;base64,{train_image_base64}" width="600">
@@ -384,12 +430,12 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
         <h2 style="color: #2C3E50;">Evaluation Report</h2>
         <pre>{overall_report}</pre>
     </div>
-    """)
+    """
+    )
     deck.append(html_report)
     ctx.decks.insert(0, deck)
 
     return overall_report
-
 
 
 # %% ------------------------------
@@ -402,6 +448,7 @@ def evaluate_model(model: torch.nn.Module, dataset_dir: FlyteDirectory, threshol
 )
 def upload_model_to_hub(model: torch.nn.Module, repo_name: str) -> str:
     from huggingface_hub import HfApi
+
     # Get the Flyte context and define the model path
     ctx = current_context()
     model_path = "best_model.pth"  # Save the model locally as "best_model.pth"
@@ -424,11 +471,11 @@ def upload_model_to_hub(model: torch.nn.Module, repo_name: str) -> str:
 
     # Upload the model to the Hugging Face repository
     api.upload_file(
-        path_or_fileobj=model_path,      # Path to the local file
-        path_in_repo="pytorch_model.bin", # Destination path in the repo
+        path_or_fileobj=model_path,  # Path to the local file
+        path_in_repo="pytorch_model.bin",  # Destination path in the repo
         repo_id=repo_name,
         commit_message="Upload Faster R-CNN model",
-        token=hf_token
+        token=hf_token,
     )
 
     return f"Model uploaded to Hugging Face Hub: https://huggingface.co/{repo_name}"

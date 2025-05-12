@@ -1,10 +1,10 @@
 """
 This script downloads a union artifact from the Union platform.
-
 """
-from union import Artifact, UnionRemote
-from flytekit.types.file import FlyteFile
+
 import torch
+from flytekit.types.file import FlyteFile
+from union import Artifact, UnionRemote
 
 # --------------------------------------------------
 # Download & save the fine-tuned model from Union Artifacts
