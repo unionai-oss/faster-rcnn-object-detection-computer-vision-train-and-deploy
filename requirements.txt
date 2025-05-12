@@ -2,9 +2,9 @@ union==0.1.181
 flytekit==1.15.4
 torch==2.5.1
 torchvision==0.20.1
-matplotlib
-pycocotools
-datasets
+matplotlib==3.10.3
+pycocotools==2.0.8
+datasets==2.14.4
 huggingface_hub
-python-dotenv
-opencv-python
+python-dotenv==1.1.0
+opencv-python==4.11.0.86
