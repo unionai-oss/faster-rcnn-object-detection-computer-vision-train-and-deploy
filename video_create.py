@@ -55,7 +55,7 @@ def draw_boxes(image, boxes, labels, scores, labels_map, threshold=0.75):
 
 
 # --------------------------------------------------
-# Load the fine-tuned SSD model from Union Artifact
+# Load the fine-tuned Faster RCNN model from Union Artifact
 # --------------------------------------------------
 FRCCNFineTunedModel = Artifact(name="frccn_fine_tuned_model")
 query = FRCCNFineTunedModel.query(
@@ -88,7 +88,7 @@ num_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
 
 # Initialize video writer
 video_writer = cv2.VideoWriter(
-    "out.mp4",
+    "object_detection_video.mp4",
     cv2.VideoWriter_fourcc(*"mp4v"),
     fps=float(frames_per_second),
     frameSize=(width, height),
