@@ -1,4 +1,3 @@
-# main.py
 
 import time
 
@@ -38,7 +37,7 @@ def detect_objects(frame: np.ndarray) -> np.ndarray:
     scores = outputs[0]["scores"].cpu()
     labels = outputs[0]["labels"].cpu()
 
-    threshold = 0.5
+    threshold = 0.6
     selected = scores > threshold
     boxes = boxes[selected]
     scores = scores[selected]
